@@ -21,6 +21,10 @@ func (f *PhotoItem) AlbumName() string {
 	return f.albumName
 }
 
+func (f *PhotoItem) FileName() string {
+	return ""
+}
+
 // It's setting EXIF data for the downloaded file.
 func (f *PhotoItem) ExifInfo() (sources.ExifInfo, error) {
 	exif := &exifInfo{

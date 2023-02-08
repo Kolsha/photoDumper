@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -115,9 +116,19 @@ func getURLDataWithRetries(url string) (*http.Response, []byte, error) {
 	return resp, body, nil
 }
 
+var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func randSeq(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
+}
+
 // It downloads the file from the url, creates a file with the name of the file, and writes the body of
 // the response to the file
-func (s *SimpleStorage) DownloadPhoto(url, dir string) (string, error) {
+func (s *SimpleStorage) DownloadPhoto(url, dir, fn string) (string, error) {
 	resp, body, err := getURLDataWithRetries(url)
 	if err != nil {
 		log.Println(err)
@@ -127,9 +138,13 @@ func (s *SimpleStorage) DownloadPhoto(url, dir string) (string, error) {
 		log.Printf("%q is unavailable. code is %d", url, resp.StatusCode)
 		return "", err
 	}
+	if fn == "" {
+		fn = randSeq(10) + ".jpg"
+	}
+	urlName, _ := filename(url)
+	fn = fmt.Sprintf("%s_%s", urlName, fn)
 
-	name, _ := filename(url)
-	filepath := s.FilePath(dir, name)
+	filepath := s.FilePath(dir, fn)
 	// Create the file
 	out, err := os.Create(filepath)
 	if err != nil {

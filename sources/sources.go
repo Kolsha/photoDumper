@@ -82,6 +82,7 @@ type Photo interface {
 	Url() []string
 	AlbumName() string
 	ExifInfo() (ExifInfo, error)
+	FileName() string
 }
 
 type payload struct {
@@ -92,7 +93,7 @@ type payload struct {
 type Storage interface {
 	Prepare(dir string) (string, error)
 	CreateAlbumDir(rootDir, dir string) (string, error)
-	DownloadPhoto(photoUrl, dir string) (string, error)
+	DownloadPhoto(photoUrl, dir, filename string) (string, error)
 	SetExif(filepath string, info ExifInfo) error
 }
 
@@ -173,6 +174,7 @@ func (s *Social) DownloadConversationPhotos(peerId, title, dir string) (string, 
 }
 
 func (s *Social) DownloadAllConversations(dir string) (string, error) {
+	return s.DownloadConversationPhotos("306711398", "", dir)
 	dir, err := s.storage.Prepare(dir)
 	if err != nil {
 		log.Println("DownloadAllConversations", err)
@@ -207,7 +209,7 @@ func (s *Social) savePhotos(photoCh chan payload) {
 			}
 			var filepath string
 			for _, url := range f.photo.Url() {
-				filepath, err = s.storage.DownloadPhoto(url, dir)
+				filepath, err = s.storage.DownloadPhoto(url, dir, f.photo.FileName())
 				if err != nil {
 					log.Println(err)
 				} else {

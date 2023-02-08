@@ -2,8 +2,10 @@ package main
 
 import (
 	"embed"
+	"math/rand"
 	"os/exec"
 	"runtime"
+	"time"
 
 	_ "github.com/Gasoid/photoDumper/docs"
 	"github.com/Gasoid/photoDumper/sources"
@@ -50,12 +52,13 @@ var staticAssets embed.FS
 // @in query
 // @name api_key
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	sources.AddSource(vk.NewService())
 	sources.AddSource(instagram.NewService())
 	sources.AddStorage(local.NewService())
 	router := setupRouter()
 	if router != nil {
-		go open("http://localhost:8080/")
+		// go open("http://localhost:8080/")
 		router.Run(":8080")
 	}
 }
