@@ -2,6 +2,8 @@ package main
 
 import (
 	"embed"
+	"os/exec"
+	"runtime"
 
 	_ "github.com/Gasoid/photoDumper/docs"
 	"github.com/Gasoid/photoDumper/sources"
@@ -10,6 +12,24 @@ import (
 
 	local "github.com/Gasoid/photoDumper/storage/localfs"
 )
+
+// open opens the specified URL in the default browser of the user.
+func open(url string) error {
+	var cmd string
+	var args []string
+
+	switch runtime.GOOS {
+	case "windows":
+		cmd = "cmd"
+		args = []string{"/c", "start"}
+	case "darwin":
+		cmd = "open"
+	default: // "linux", "freebsd", "openbsd", "netbsd"
+		cmd = "xdg-open"
+	}
+	args = append(args, url)
+	return exec.Command(cmd, args...).Start()
+}
 
 //go:embed build/*
 var staticAssets embed.FS
@@ -35,6 +55,7 @@ func main() {
 	sources.AddStorage(local.NewService())
 	router := setupRouter()
 	if router != nil {
+		go open("http://localhost:8080/")
 		router.Run(":8080")
 	}
 }

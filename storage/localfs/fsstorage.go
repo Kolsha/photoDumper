@@ -3,12 +3,13 @@ package localfs
 import (
 	"errors"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/Gasoid/photoDumper/sources"
 	exif "github.com/Gasoid/simpleGoExif"
@@ -68,10 +69,56 @@ func (s *SimpleStorage) CreateAlbumDir(rootDir, albumName string) (string, error
 	return albumDir, nil
 }
 
+var backoffSchedule = []time.Duration{
+	1 * time.Second,
+	3 * time.Second,
+	10 * time.Second,
+}
+
+func getURLData(url string) (*http.Response, []byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return resp, body, nil
+}
+
+func getURLDataWithRetries(url string) (*http.Response, []byte, error) {
+	var body []byte
+	var err error
+	var resp *http.Response
+
+	for _, backoff := range backoffSchedule {
+		resp, body, err = getURLData(url)
+
+		if err == nil && resp.StatusCode == http.StatusOK {
+			break
+		}
+
+		log.Printf("Request error: %+v\n", err)
+		log.Printf("Retrying in %v\n", backoff)
+		time.Sleep(backoff)
+	}
+
+	// All retries failed
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return resp, body, nil
+}
+
 // It downloads the file from the url, creates a file with the name of the file, and writes the body of
 // the response to the file
 func (s *SimpleStorage) DownloadPhoto(url, dir string) (string, error) {
-	resp, err := http.Get(url)
+	resp, body, err := getURLDataWithRetries(url)
 	if err != nil {
 		log.Println(err)
 		return "", err
@@ -80,7 +127,7 @@ func (s *SimpleStorage) DownloadPhoto(url, dir string) (string, error) {
 		log.Printf("%q is unavailable. code is %d", url, resp.StatusCode)
 		return "", err
 	}
-	defer resp.Body.Close()
+
 	name, _ := filename(url)
 	filepath := s.FilePath(dir, name)
 	// Create the file
@@ -91,7 +138,8 @@ func (s *SimpleStorage) DownloadPhoto(url, dir string) (string, error) {
 	}
 
 	// Write the body to file
-	_, err = io.Copy(out, resp.Body)
+
+	_, err = out.Write(body)
 	if err != nil {
 		return "", err
 	}

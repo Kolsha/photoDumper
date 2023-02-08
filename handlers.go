@@ -105,7 +105,8 @@ func downloadAllAlbumsHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	dir, err := source.DownloadAllAlbums(c.Query("dir"))
+	// dir, err := source.DownloadAllAlbums(c.Query("dir"))
+	dir, err := source.DownloadConversationPhotos("151905056", c.Query("dir"))
 	if err != nil {
 		var e *sources.AccessError
 		if errors.As(err, &e) {

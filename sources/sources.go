@@ -67,6 +67,7 @@ type ItemFetcher interface {
 type Source interface {
 	AllAlbums() ([]map[string]string, error)
 	AlbumPhotos(albumdID string) (ItemFetcher, error)
+	ConversationPhotos(peerId string) (ItemFetcher, error)
 }
 
 type ExifInfo interface {
@@ -76,7 +77,7 @@ type ExifInfo interface {
 }
 
 type Photo interface {
-	Url() string
+	Url() []string
 	AlbumName() string
 	ExifInfo() (ExifInfo, error)
 }
@@ -149,6 +150,26 @@ func (s *Social) DownloadAlbum(albumID, dir string) (string, error) {
 	return dir, nil
 }
 
+// DownloadConversationPhotos
+func (s *Social) DownloadConversationPhotos(peerId, dir string) (string, error) {
+	dir, err := s.storage.Prepare(dir)
+	if err != nil {
+		log.Println("DownloadConversationPhotos", err)
+		return "", &StorageError{text: "dir can't be created", err: err}
+	}
+
+	cur, err := s.source.ConversationPhotos(peerId)
+	if err != nil {
+		return "", &SourceError{text: "can't receive photos", err: err}
+	}
+	go func() {
+		for cur.Next() {
+			photoCh <- payload{photo: cur.Item(), rootDir: dir}
+		}
+	}()
+	return dir, nil
+}
+
 func (s *Social) savePhotos(photoCh chan payload) {
 	for file := range photoCh {
 		f := file
@@ -158,7 +179,16 @@ func (s *Social) savePhotos(photoCh chan payload) {
 				log.Println(err)
 				return
 			}
-			filepath, err := s.storage.DownloadPhoto(f.photo.Url(), dir)
+			var filepath string
+			for _, url := range f.photo.Url() {
+				filepath, err = s.storage.DownloadPhoto(url, dir)
+				if err != nil {
+					log.Println(err)
+				} else {
+					break
+				}
+			}
+
 			if err != nil {
 				log.Println(err)
 				return

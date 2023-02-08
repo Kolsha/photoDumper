@@ -8,12 +8,12 @@ import (
 )
 
 type PhotoItem struct {
-	url       string
+	url       []string
 	albumName string
 	created   time.Time
 }
 
-func (f *PhotoItem) Url() string {
+func (f *PhotoItem) Url() []string {
 	return f.url
 }
 
@@ -112,7 +112,7 @@ func (f *fetcher) Item() sources.Photo {
 		date = time.Now()
 	}
 	return &PhotoItem{
-		url:       photo.MediaUrl,
+		url:       []string{photo.MediaUrl},
 		albumName: photo.Username,
 		created:   date,
 		// latitude:  photo.Lat,
@@ -126,4 +126,8 @@ func (ig *Instagram) AlbumPhotos(albumID string) (sources.ItemFetcher, error) {
 		return nil, &sources.AccessError{Err: err, Text: "token is invalid?"}
 	}
 	return &fetcher{media: media}, nil
+}
+
+func (ig *Instagram) ConversationPhotos(peerId string) (sources.ItemFetcher, error) {
+	panic("not implemented")
 }
