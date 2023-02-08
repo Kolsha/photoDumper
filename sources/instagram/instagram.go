@@ -128,6 +128,10 @@ func (ig *Instagram) AlbumPhotos(albumID string) (sources.ItemFetcher, error) {
 	return &fetcher{media: media}, nil
 }
 
-func (ig *Instagram) ConversationPhotos(peerId string) (sources.ItemFetcher, error) {
+func (ig *Instagram) ConversationPhotos(peerId, title string) (sources.ItemFetcher, error) {
+	panic("not implemented")
+}
+
+func (ig *Instagram) AllConversations() ([]map[string]string, error) {
 	panic("not implemented")
 }

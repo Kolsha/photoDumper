@@ -67,7 +67,9 @@ type ItemFetcher interface {
 type Source interface {
 	AllAlbums() ([]map[string]string, error)
 	AlbumPhotos(albumdID string) (ItemFetcher, error)
-	ConversationPhotos(peerId string) (ItemFetcher, error)
+
+	ConversationPhotos(peerId, title string) (ItemFetcher, error)
+	AllConversations() ([]map[string]string, error)
 }
 
 type ExifInfo interface {
@@ -151,22 +153,46 @@ func (s *Social) DownloadAlbum(albumID, dir string) (string, error) {
 }
 
 // DownloadConversationPhotos
-func (s *Social) DownloadConversationPhotos(peerId, dir string) (string, error) {
+func (s *Social) DownloadConversationPhotos(peerId, title, dir string) (string, error) {
 	dir, err := s.storage.Prepare(dir)
 	if err != nil {
 		log.Println("DownloadConversationPhotos", err)
 		return "", &StorageError{text: "dir can't be created", err: err}
 	}
 
-	cur, err := s.source.ConversationPhotos(peerId)
+	cur, err := s.source.ConversationPhotos(peerId, title)
 	if err != nil {
-		return "", &SourceError{text: "can't receive photos", err: err}
+		return "", &SourceError{text: "DownloadConversationPhotos: can't receive photos", err: err}
 	}
 	go func() {
 		for cur.Next() {
 			photoCh <- payload{photo: cur.Item(), rootDir: dir}
 		}
 	}()
+	return dir, nil
+}
+
+func (s *Social) DownloadAllConversations(dir string) (string, error) {
+	dir, err := s.storage.Prepare(dir)
+	if err != nil {
+		log.Println("DownloadAllConversations", err)
+		return "", &StorageError{text: "dir can't be created", err: err}
+	}
+
+	conversations, err := s.source.AllConversations()
+	log.Println(conversations)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range conversations {
+		go func(id, title string) {
+			_, err := s.DownloadConversationPhotos(id, title, dir)
+			if err != nil {
+				log.Println(err, "DownloadAllConversations failed")
+			}
+		}(item["id"], item["title"])
+	}
+
 	return dir, nil
 }
 

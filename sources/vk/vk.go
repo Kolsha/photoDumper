@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,6 +97,58 @@ func (v *Vk) AllAlbums() ([]map[string]string, error) {
 	return albums, nil
 }
 
+func (v *Vk) AllConversations() ([]map[string]string, error) {
+	const maxConversations = 200
+	params := api.Params{
+		"offset":   0,
+		"count":    maxConversations,
+		"extended": 1,
+		// "v":      "5.80",
+	}
+	result := make([]map[string]string, 0, 1)
+
+	var resp api.MessagesGetConversationsResponse
+	var err error
+	offset := 0
+	for {
+		resp, err = v.vkAPI.MessagesGetConversations(params)
+		if err != nil {
+			log.Println("AllConversations:", err)
+			return nil, makeError(err, "AllConversations failed")
+		}
+		size := len(resp.Items)
+		if size < 1 {
+			break
+		}
+		offset += size
+		params["offset"] = offset
+
+		log.Printf("Getting conversation: %d got", size)
+
+		titles := map[int]string{}
+		for _, item := range resp.Profiles {
+			titles[item.ID] = fmt.Sprintf("%s_%s_%d", item.FirstName, item.LastName, item.ID)
+		}
+		for _, item := range resp.Groups {
+			titles[-item.ID] = fmt.Sprintf("%s_-%d", item.Name, item.ID)
+		}
+		for _, item := range resp.Items {
+			strId := fmt.Sprint(item.Conversation.Peer.ID)
+			conversation := map[string]string{
+				"id":    strId,
+				"title": "",
+			}
+			if item.Conversation.Peer.Type == "chat" {
+				conversation["title"] = fmt.Sprintf("%s_%s", item.Conversation.ChatSettings.Title, strId)
+			} else if title, ok := titles[item.Conversation.Peer.ID]; ok {
+				conversation["title"] = title
+			}
+			result = append(result, conversation)
+		}
+	}
+	return result, nil
+}
+
 type photoFetcher struct {
 	nextPhoto int
 	items     []object.PhotosPhoto
@@ -143,14 +196,26 @@ func (v *Vk) AlbumPhotos(albumID string) (sources.ItemFetcher, error) {
 	return &photoFetcher{items: items, albumName: albumResp.Items[0].Title}, nil
 }
 
-func (v *Vk) ConversationPhotos(peerId string) (sources.ItemFetcher, error) {
+func (v *Vk) ConversationPhotos(peerId, title string) (sources.ItemFetcher, error) {
 	const maxHistoryAttachments = 200
+	const groupChatOffset = 2000000000
+	name := title
+	intPeerId, _ := strconv.Atoi(peerId)
+	if len(name) < 1 && (intPeerId < 0 || intPeerId >= groupChatOffset) {
+		name = peerId
+	}
 
-	params := api.Params{"peer_id": peerId, "count": maxHistoryAttachments, "photo_sizes": 1, "media_type": "photo"}
+	params := api.Params{
+		"peer_id":            peerId,
+		"count":              maxHistoryAttachments,
+		"photo_sizes":        1,
+		"max_forwards_level": 45,
+		"media_type":         "photo",
+	}
 
 	var resp api.MessagesGetHistoryAttachmentsResponse
 	var err error
-	var name string
+
 	items := make([]object.PhotosPhoto, 0, 1)
 	for {
 		resp, err = v.vkAPI.MessagesGetHistoryAttachments(params)
@@ -170,13 +235,15 @@ func (v *Vk) ConversationPhotos(peerId string) (sources.ItemFetcher, error) {
 		}
 		if len(name) < 1 {
 			profile := resp.Profiles[len(resp.Profiles)-1]
-			name = fmt.Sprintf("%s %s", profile.FirstName, profile.LastName)
+			name = fmt.Sprintf("%s_%s_%s", profile.FirstName, profile.LastName, peerId)
 		}
 		params["start_from"] = resp.NextFrom
 
 	}
 	if len(items) < 1 {
-		return nil, fmt.Errorf("there are no attacments in this conversation: %s", peerId)
+		msg := fmt.Sprintf("there are no attacments in this conversation: %s", peerId)
+		log.Println(msg)
+		return nil, fmt.Errorf(msg)
 	}
 
 	return &photoFetcher{items: items, albumName: name, id: peerId}, nil
