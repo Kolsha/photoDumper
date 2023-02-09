@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +44,6 @@ func (v *Vk) AllAlbums() ([]map[string]string, error) {
 			"id":      fmt.Sprint(album.ID),
 			"created": created.Format(time.RFC3339),
 			"size":    fmt.Sprint(album.Size),
-			// "count": album.,
 		}
 	}
 	return albums, nil
@@ -57,7 +55,6 @@ func (v *Vk) AllConversations() ([]map[string]string, error) {
 		"offset":   0,
 		"count":    maxConversations,
 		"extended": 1,
-		// "v":      "5.80",
 	}
 	result := make([]map[string]string, 0, 1)
 
@@ -120,26 +117,6 @@ func (pf *photoFetcher) Next() bool {
 	return true
 }
 
-func toPhotoItem(photo object.PhotosPhoto) PhotoItem {
-	sort.Slice(photo.Sizes, func(i, j int) bool {
-		return Area(photo.Sizes[i]) > Area(photo.Sizes[j])
-	})
-
-	urls := make([]string, 0, len(photo.Sizes))
-	for _, s := range photo.Sizes {
-		urls = append(urls, s.URL)
-	}
-
-	created := time.Unix(int64(photo.Date), 0)
-	return PhotoItem{
-		url:       urls,
-		created:   created,
-		latitude:  photo.Lat,
-		longitude: photo.Long,
-		extension: "jpg",
-	}
-}
-
 // Downloading photos from a VK album.
 func (v *Vk) AlbumPhotos(albumID string) (sources.ItemFetcher, error) {
 	params := api.Params{"album_ids": albumID}
@@ -173,62 +150,6 @@ func (v *Vk) AlbumPhotos(albumID string) (sources.ItemFetcher, error) {
 	return &photoFetcher{items: items, albumName: albumResp.Items[0].Title}, nil
 }
 
-/*
-func (v *Vk) ConversationPhotosOld(peerId, title string) (sources.ItemFetcher, error) {
-	const maxHistoryAttachments = 200
-	const groupChatOffset = 2000000000
-	name := title
-	intPeerId, _ := strconv.Atoi(peerId)
-	if len(name) < 1 && (intPeerId < 0 || intPeerId >= groupChatOffset) {
-		name = peerId
-	}
-
-	params := api.Params{
-		"peer_id":            peerId,
-		"count":              maxHistoryAttachments,
-		"photo_sizes":        1,
-		"max_forwards_level": 45,
-		"media_type":         "photo",
-	}
-
-	var resp api.MessagesGetHistoryAttachmentsResponse
-	var err error
-
-	items := make([]object.PhotosPhoto, 0, 1)
-	for {
-		resp, err = v.vkAPI.MessagesGetHistoryAttachments(params)
-		if err != nil {
-			log.Println("ConversationPhotos:", err)
-			return nil, makeError(err, "ConversationPhotos failed")
-		}
-		size := len(resp.Items)
-		if size < 1 {
-			break
-		}
-
-		log.Printf("Getting photos from '%s': %d got", peerId, size)
-
-		for _, item := range resp.Items {
-			items = append(items, item.Attachment.Photo)
-		}
-		if len(name) < 1 {
-			profile := resp.Profiles[len(resp.Profiles)-1]
-			name = fmt.Sprintf("%s_%s_%s", profile.FirstName, profile.LastName, peerId)
-		}
-		params["start_from"] = resp.NextFrom
-
-	}
-	if len(items) < 1 {
-		msg := fmt.Sprintf("there are no attacments in this conversation: %s", peerId)
-		log.Println(msg)
-		return nil, fmt.Errorf(msg)
-	}
-
-	return &photoFetcher{items: items, albumName: name, id: peerId}, nil
-
-}
-*/
-
 func convertPhoto(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) {
 	return toPhotoItem(a.Photo), nil //fmt.Errorf("skip for now")
 }
@@ -240,12 +161,15 @@ func convertDoc(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) {
 	if a.Type != "doc" {
 		return result, fmt.Errorf("not supported type of attachment: %s", a.Type)
 	}
-	if a.Doc.Type != imageDocType && a.Doc.Type != videoDocType {
-		return result, fmt.Errorf("not supported type of document: %d", a.Doc.Type)
+	doc := a.Doc
+	if doc.Type != imageDocType && doc.Type != videoDocType {
+		return result, fmt.Errorf("not supported type of document: %d", doc.Type)
 	}
-	result.url = []string{a.Doc.URL}
-	result.created = time.Unix(int64(a.Doc.Date), 0)
-	result.extension = a.Doc.Ext
+	result.url = []string{doc.URL}
+	result.created = time.Unix(int64(doc.Date), 0)
+	result.extension = doc.Ext
+	result.description = doc.Title
+	result.sourceUrl = fmt.Sprintf("https://vk.com/%s", doc.ToAttachment())
 	return result, nil
 }
 
@@ -254,10 +178,11 @@ func convertVideo(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) 
 	if a.Type != "video" {
 		return result, fmt.Errorf("not supported type of attachment: %s", a.Type)
 	}
-	if !a.Video.CanDownload {
+	video := a.Video
+	if !video.CanDownload {
 		return result, fmt.Errorf("can't download video")
 	}
-	files := a.Video.Files
+	files := video.Files
 	urls := []string{files.Src, files.Mp4_2160, files.Mp4_1440, files.Mp4_1080, files.Mp4_720, files.Mp4_480, files.Mp4_360, files.Mp4_240, files.Mp4_144}
 	result.url = make([]string, 0, 2)
 	for _, url := range urls {
@@ -266,8 +191,10 @@ func convertVideo(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) 
 		}
 	}
 
-	result.created = time.Unix(int64(a.Video.Date), 0)
+	result.created = time.Unix(int64(video.Date), 0)
 	result.extension = "mp4"
+	result.description = video.Description
+	result.sourceUrl = fmt.Sprintf("https://vk.com/%s", video.ToAttachment())
 	return result, nil
 }
 
@@ -294,15 +221,11 @@ func (v *Vk) ConversationPhotos(peerId, title string) (sources.ItemFetcher, erro
 type attachmentConverter func(object.MessagesHistoryMessageAttachment) (PhotoItem, error)
 
 func (v *Vk) ConversationAttachments(peerId, mediaType, title string, converter attachmentConverter) ([]PhotoItem, string, error) {
-	if mediaType == "photo" {
-		return nil, "", nil
-	}
 	const maxHistoryAttachments = 200
 	const groupChatOffset = 2000000000
-	name := title
 	intPeerId, _ := strconv.Atoi(peerId)
-	if len(name) < 1 && (intPeerId < 0 || intPeerId >= groupChatOffset) {
-		name = peerId
+	if len(title) < 1 && (intPeerId < 0 || intPeerId >= groupChatOffset) {
+		title = peerId
 	}
 
 	params := api.Params{
@@ -328,35 +251,30 @@ func (v *Vk) ConversationAttachments(peerId, mediaType, title string, converter 
 			break
 		}
 
-		log.Printf("Getting attacments from '%s': %d got", peerId, size)
-
 		for _, item := range resp.Items {
 			photo, convertErr := converter(item.Attachment)
 			if convertErr != nil {
-				log.Println("attacment skipped: ", err)
+				// log.Println("attacment skipped: ", convertErr)
 				continue
 			}
 			items = append(items, photo)
 		}
-		if len(name) < 1 {
+		if len(title) < 1 {
 			profile := resp.Profiles[len(resp.Profiles)-1]
-			name = fmt.Sprintf("%s_%s_%s", profile.FirstName, profile.LastName, peerId)
+			title = fmt.Sprintf("%s_%s_%s", profile.FirstName, profile.LastName, peerId)
 		}
 		params["start_from"] = resp.NextFrom
 
 	}
-	if len(items) < 1 {
+	if size := len(items); size < 1 {
 		msg := fmt.Sprintf("there are no attacments in this conversation: %s", peerId)
 		log.Println(msg)
 		return nil, "", fmt.Errorf(msg)
+	} else {
+		log.Printf("Getting attacments from '%s': %d got", peerId, size)
 	}
 
-	return items, name, nil
-
-}
-
-func Area(b object.PhotosPhotoSizes) float64 {
-	return b.Height * b.Width
+	return items, title, nil
 }
 
 func (pf *photoFetcher) Item() sources.Photo {

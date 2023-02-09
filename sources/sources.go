@@ -1,9 +1,15 @@
 package sources
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 type Kind int
@@ -17,7 +23,7 @@ var (
 	registeredSources  = map[string]func(creds string) Source{}
 	registeredStorages = map[string]func() Storage{}
 	photoCh            chan payload
-	maxConcurrentFiles = 5
+	maxConcurrentFiles = 20
 )
 
 type StorageError struct {
@@ -83,6 +89,7 @@ type Photo interface {
 	AlbumName() string
 	ExifInfo() (ExifInfo, error)
 	FileName() string
+	SourceUrl() string
 }
 
 type payload struct {
@@ -165,16 +172,16 @@ func (s *Social) DownloadConversationPhotos(peerId, title, dir string) (string, 
 	if err != nil {
 		return "", &SourceError{text: "DownloadConversationPhotos: can't receive photos", err: err}
 	}
-	go func() {
-		for cur.Next() {
-			photoCh <- payload{photo: cur.Item(), rootDir: dir}
-		}
-	}()
+	// go func() {
+	for cur.Next() {
+		photoCh <- payload{photo: cur.Item(), rootDir: dir}
+	}
+	// }()
 	return dir, nil
 }
 
 func (s *Social) DownloadAllConversations(dir string) (string, error) {
-	return s.DownloadConversationPhotos("306711398", "", dir)
+	// return s.DownloadConversationPhotos("306711398", "", dir)
 	dir, err := s.storage.Prepare(dir)
 	if err != nil {
 		log.Println("DownloadAllConversations", err)
@@ -186,8 +193,16 @@ func (s *Social) DownloadAllConversations(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	sem := semaphore.NewWeighted(5)
+	ctx := context.TODO()
+
 	for _, item := range conversations {
 		go func(id, title string) {
+
+			sem.Acquire(ctx, 1)
+			defer sem.Release(1)
+
 			_, err := s.DownloadConversationPhotos(id, title, dir)
 			if err != nil {
 				log.Println(err, "DownloadAllConversations failed")
@@ -198,10 +213,26 @@ func (s *Social) DownloadAllConversations(dir string) (string, error) {
 	return dir, nil
 }
 
+func saveFailedPhotoInfo(f payload) {
+	sourceUrl := f.photo.SourceUrl()
+	attach := strings.Split(sourceUrl, "/")
+	fn := attach[len(attach)-1]
+	filepath := filepath.Join(f.rootDir, fn+".txt")
+	out, err := os.Create(filepath)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer out.Close()
+	out.WriteString(sourceUrl)
+}
+
 func (s *Social) savePhotos(photoCh chan payload) {
+	log.Println("savePhotos: started")
 	for file := range photoCh {
+		// log.Println("Got file", file)
 		f := file
-		go func() {
+		/*go*/ func() {
 			dir, err := s.storage.CreateAlbumDir(f.rootDir, f.photo.AlbumName())
 			if err != nil {
 				log.Println(err)
@@ -218,7 +249,8 @@ func (s *Social) savePhotos(photoCh chan payload) {
 			}
 
 			if err != nil {
-				log.Println(err)
+				log.Printf("FILE FAILED DOWNLOAD: %+v\n", err)
+				saveFailedPhotoInfo(f)
 				return
 			}
 			exif, err := f.photo.ExifInfo()
@@ -251,7 +283,9 @@ func New(sourceName, creds string) (*Social, error) {
 	}
 	if photoCh == nil {
 		photoCh = make(chan payload, maxConcurrentFiles)
-		go s.savePhotos(photoCh)
+		for i := 0; i < maxConcurrentFiles; i++ {
+			go s.savePhotos(photoCh)
+		}
 	}
 	return s, nil
 }

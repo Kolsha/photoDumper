@@ -17,6 +17,10 @@ func (f *PhotoItem) Url() []string {
 	return f.url
 }
 
+func (f *PhotoItem) SourceUrl() string {
+	return ""
+}
+
 func (f *PhotoItem) AlbumName() string {
 	return f.albumName
 }

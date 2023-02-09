@@ -6,14 +6,18 @@ import (
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Gasoid/photoDumper/sources"
 	exif "github.com/Gasoid/simpleGoExif"
+	exiftool "github.com/barasher/go-exiftool"
+	exifAnother "github.com/dsoprea/go-exif/v2"
 )
 
 type SimpleStorage struct {
@@ -71,13 +75,42 @@ func (s *SimpleStorage) CreateAlbumDir(rootDir, albumName string) (string, error
 }
 
 var backoffSchedule = []time.Duration{
-	1 * time.Second,
-	3 * time.Second,
-	10 * time.Second,
+	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+	16 * time.Second,
+	32 * time.Second,
+}
+
+var (
+	once      sync.Once
+	netClient *http.Client
+)
+
+func newNetClient() *http.Client {
+	once.Do(func() {
+		var netTransport = &http.Transport{
+			Dial: (&net.Dialer{
+				Timeout: 60 * time.Second,
+			}).Dial,
+			TLSHandshakeTimeout: 60 * time.Second,
+		}
+		netClient = &http.Client{
+			Timeout:   time.Second * 60,
+			Transport: netTransport,
+		}
+	})
+
+	return netClient
 }
 
 func getURLData(url string) (*http.Response, []byte, error) {
-	resp, err := http.Get(url)
+	// req, err := http.NewRequest("GET", url, nil)
+	// if err != nil {
+	// 	return nil, nil, err
+	// }
+
+	resp, err := http.Get(url) //().Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -99,12 +132,12 @@ func getURLDataWithRetries(url string) (*http.Response, []byte, error) {
 	for _, backoff := range backoffSchedule {
 		resp, body, err = getURLData(url)
 
-		if err == nil && resp.StatusCode == http.StatusOK {
+		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotFound) {
 			break
 		}
 
-		log.Printf("Request error: %+v\n", err)
-		log.Printf("Retrying in %v\n", backoff)
+		// log.Printf("Request error: %+v\n", err)
+		// log.Printf("Retrying in %v\n", backoff)
 		time.Sleep(backoff)
 	}
 
@@ -151,6 +184,7 @@ func (s *SimpleStorage) DownloadPhoto(url, dir, fn string) (string, error) {
 		log.Println(err)
 		return "", err
 	}
+	defer out.Close()
 
 	// Write the body to file
 
@@ -158,15 +192,36 @@ func (s *SimpleStorage) DownloadPhoto(url, dir, fn string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out.Close()
+
 	return filepath, nil
+}
+
+func tryExifTool(filepath string, photoExif sources.ExifInfo) error {
+	et, err := exiftool.NewExiftool()
+	if err != nil {
+		return err
+	}
+	defer et.Close()
+
+	originals := et.ExtractMetadata(filepath)
+	if len(originals) < 1 || originals[0].Fields == nil || originals[0].Err != nil {
+		return fmt.Errorf("unknown metadata")
+	}
+	originals[0].SetString("Title", photoExif.Description())
+	originals[0].SetString("DateTime", exifAnother.ExifFullTimestampString(photoExif.Created()))
+	et.WriteMetadata(originals)
+	return nil
 }
 
 // It's setting EXIF data for the downloaded file.
 func (s *SimpleStorage) SetExif(filepath string, photoExif sources.ExifInfo) error {
 	image, err := exif.Open(filepath)
 	if err != nil {
-		log.Println("exif.Open", err)
+		// log.Println("exif.Open", err)
+		err = tryExifTool(filepath, photoExif)
+		if err != nil {
+			log.Println("tryExifTool", err)
+		}
 		return err
 	}
 	defer image.Close()
