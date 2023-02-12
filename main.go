@@ -2,7 +2,9 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"math/rand"
+	"net/http"
 	"os/exec"
 	"runtime"
 	"time"
@@ -58,7 +60,12 @@ func main() {
 	sources.AddStorage(local.NewService())
 	router := setupRouter()
 	if router != nil {
-		// go open("http://localhost:8080/")
+		go func() {
+			access_token := ""
+			url := fmt.Sprintf("http://localhost:8080/api/download-all-albums/vk/?api_key=%s&dir=~/photoDumper/", access_token)
+			time.Sleep(1 * time.Second)
+			http.Get(url)
+		}()
 		router.Run(":8080")
 	}
 }

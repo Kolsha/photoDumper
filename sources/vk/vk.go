@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Gasoid/photoDumper/sources"
@@ -117,42 +116,73 @@ func (pf *photoFetcher) Next() bool {
 	return true
 }
 
+func (v *Vk) getAlbumTitle(ownerId, albumID string) (string, error) {
+	params := api.Params{"owner_id": ownerId, "album_ids": albumID}
+	resp, err := v.vkAPI.PhotosGetAlbums(params)
+	if err != nil || resp.Count < 1 {
+		return "", makeError(err, "getAlbumName failed")
+	}
+	return resp.Items[0].Title, nil
+}
+
 // Downloading photos from a VK album.
-func (v *Vk) AlbumPhotos(albumID string) (sources.ItemFetcher, error) {
-	params := api.Params{"album_ids": albumID}
-	if strings.Contains(albumID, "-") {
-		params["need_system"] = 1
-	}
-	albumResp, err := v.vkAPI.PhotosGetAlbums(params)
+func (v *Vk) AlbumPhotos(ownerId, albumID string) (sources.ItemFetcher, error) {
+	title, err := v.getAlbumTitle(ownerId, albumID)
 	if err != nil {
-		return nil, makeError(err, "DownloadAlbum failed")
+		return nil, err
 	}
-	var resp api.PhotosGetResponse
-	items := make([]PhotoItem, 0, albumResp.Count)
-	for offset := 1; offset <= albumResp.Count; offset += maxCount {
-		resp, err = v.vkAPI.PhotosGet(api.Params{"album_id": albumID, "count": maxCount, "photo_sizes": 1, "offset": offset})
+	if title == "" {
+		title = "Untitled album"
+	}
+
+	params := api.Params{
+		"owner_id":    ownerId,
+		"album_id":    albumID,
+		"count":       maxCount,
+		"photo_sizes": 1,
+	}
+
+	items := make([]PhotoItem, 0, 1)
+	for offset := 0; ; {
+		resp, err := v.vkAPI.PhotosGet(params)
 		if err != nil {
 			log.Println("DownloadAlbum:", err)
 			return nil, makeError(err, "DownloadAlbum failed")
+		}
+		size := len(resp.Items)
+		if size < 1 {
+			break
 		}
 		for _, item := range resp.Items {
 			photo := toPhotoItem(item)
 			items = append(items, photo)
 		}
-	}
-	if albumResp.Count < 1 {
-		return nil, errors.New("no such an album")
-	}
-	if albumResp.Items[0].Title == "" {
-		return nil, errors.New("album title is empty")
+		offset += size
+		params["offset"] = offset
 	}
 
-	return &photoFetcher{items: items, albumName: albumResp.Items[0].Title}, nil
+	if size := len(items); size < 1 {
+		msg := fmt.Sprintf("there are no photos in this album: '%s_%s'", ownerId, albumID)
+		log.Println(msg)
+		return nil, fmt.Errorf(msg)
+	} else {
+		log.Printf("Getting attacments from '%s_%s': %d got\n", ownerId, albumID, size)
+	}
+
+	return &photoFetcher{items: items, albumName: title}, nil
 }
 
 func convertPhoto(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) {
 	return toPhotoItem(a.Photo), nil //fmt.Errorf("skip for now")
 }
+
+const (
+	KiB = 1024
+	MiB = 1024 * KiB
+	GiB = 1024 * MiB
+	TiB = 1024 * GiB
+	PiB = 1024 * TiB
+)
 
 func convertDoc(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) {
 	const imageDocType = 4
@@ -165,15 +195,24 @@ func convertDoc(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) {
 	if doc.Type != imageDocType && doc.Type != videoDocType {
 		return result, fmt.Errorf("not supported type of document: %d", doc.Type)
 	}
+
+	sourceUrl := fmt.Sprintf("https://vk.com/%s", doc.ToAttachment())
+	if doc.Size > (300 * MiB) {
+		err := fmt.Errorf("file is too big: %d, %s", doc.Size, sourceUrl)
+		log.Println(err)
+		return result, err
+	}
+
 	result.url = []string{doc.URL}
 	result.created = time.Unix(int64(doc.Date), 0)
 	result.extension = doc.Ext
 	result.description = doc.Title
-	result.sourceUrl = fmt.Sprintf("https://vk.com/%s", doc.ToAttachment())
+	result.sourceUrl = sourceUrl
 	return result, nil
 }
 
 func convertVideo(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) {
+	const halfHour = 30 * 60
 	result := PhotoItem{}
 	if a.Type != "video" {
 		return result, fmt.Errorf("not supported type of attachment: %s", a.Type)
@@ -182,6 +221,14 @@ func convertVideo(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) 
 	if !video.CanDownload {
 		return result, fmt.Errorf("can't download video")
 	}
+
+	sourceUrl := fmt.Sprintf("https://vk.com/%s", video.ToAttachment())
+	if video.Duration > halfHour {
+		err := fmt.Errorf("video is too long: %d, %s", video.Duration, sourceUrl)
+		log.Println(err)
+		return result, err
+	}
+
 	files := video.Files
 	urls := []string{files.Src, files.Mp4_2160, files.Mp4_1440, files.Mp4_1080, files.Mp4_720, files.Mp4_480, files.Mp4_360, files.Mp4_240, files.Mp4_144}
 	result.url = make([]string, 0, 2)
@@ -194,7 +241,7 @@ func convertVideo(a object.MessagesHistoryMessageAttachment) (PhotoItem, error) 
 	result.created = time.Unix(int64(video.Date), 0)
 	result.extension = "mp4"
 	result.description = video.Description
-	result.sourceUrl = fmt.Sprintf("https://vk.com/%s", video.ToAttachment())
+	result.sourceUrl = sourceUrl
 	return result, nil
 }
 

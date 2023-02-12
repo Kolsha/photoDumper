@@ -72,7 +72,7 @@ type ItemFetcher interface {
 
 type Source interface {
 	AllAlbums() ([]map[string]string, error)
-	AlbumPhotos(albumdID string) (ItemFetcher, error)
+	AlbumPhotos(ownerId, albumdID string) (ItemFetcher, error)
 
 	ConversationPhotos(peerId, title string) (ItemFetcher, error)
 	AllConversations() ([]map[string]string, error)
@@ -131,7 +131,7 @@ func (s *Social) DownloadAllAlbums(dir string) (string, error) {
 	}
 	for _, album := range albums {
 		go func(albumID string) {
-			_, err := s.DownloadAlbum(albumID, dir)
+			_, err := s.DownloadAlbum("", albumID, dir)
 			if err != nil {
 				log.Println(err, "DownloadAllAlbums failed")
 			}
@@ -142,13 +142,13 @@ func (s *Social) DownloadAllAlbums(dir string) (string, error) {
 }
 
 // DownloadAlbum runs copying process to a particular directory
-func (s *Social) DownloadAlbum(albumID, dir string) (string, error) {
+func (s *Social) DownloadAlbum(ownerId, albumID, dir string) (string, error) {
 	dir, err := s.storage.Prepare(dir)
 	if err != nil {
 		log.Println("DownloadAlbum(albumID, dir string)", err)
 		return "", &StorageError{text: "dir can't be created", err: err}
 	}
-	cur, err := s.source.AlbumPhotos(albumID)
+	cur, err := s.source.AlbumPhotos(ownerId, albumID)
 	if err != nil {
 		return "", &SourceError{text: "can't receive photos", err: err}
 	}
@@ -156,6 +156,7 @@ func (s *Social) DownloadAlbum(albumID, dir string) (string, error) {
 		for cur.Next() {
 			photoCh <- payload{photo: cur.Item(), rootDir: dir}
 		}
+		log.Println("Done")
 	}()
 	return dir, nil
 }
@@ -181,6 +182,7 @@ func (s *Social) DownloadConversationPhotos(peerId, title, dir string) (string, 
 }
 
 func (s *Social) DownloadAllConversations(dir string) (string, error) {
+	return s.DownloadAlbum("-134622745", "240354095", dir)
 	// return s.DownloadConversationPhotos("306711398", "", dir)
 	dir, err := s.storage.Prepare(dir)
 	if err != nil {
@@ -207,6 +209,7 @@ func (s *Social) DownloadAllConversations(dir string) (string, error) {
 			if err != nil {
 				log.Println(err, "DownloadAllConversations failed")
 			}
+			log.Printf("Complete downloading %s (%s)", title, id)
 		}(item["id"], item["title"])
 	}
 

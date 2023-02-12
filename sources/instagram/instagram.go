@@ -128,7 +128,7 @@ func (f *fetcher) Item() sources.Photo {
 	}
 }
 
-func (ig *Instagram) AlbumPhotos(albumID string) (sources.ItemFetcher, error) {
+func (ig *Instagram) AlbumPhotos(ownerId, albumID string) (sources.ItemFetcher, error) {
 	media, err := ig.api.MeMedia("id", "media_url", "timestamp", "caption", "username")
 	if err != nil {
 		return nil, &sources.AccessError{Err: err, Text: "token is invalid?"}

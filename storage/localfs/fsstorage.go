@@ -3,10 +3,9 @@ package localfs
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -83,70 +82,85 @@ var backoffSchedule = []time.Duration{
 }
 
 var (
-	once      sync.Once
-	netClient *http.Client
+	once       sync.Once
+	netClient  *http.Client
+	seenURLMap sync.Map
 )
+
+func seenUrl(url string) bool {
+	backOff := 0
+	for {
+		actual, loaded := seenURLMap.LoadOrStore(url, nil)
+		if !loaded {
+			return false
+		}
+		if actual == nil {
+			time.Sleep(backoffSchedule[backOff])
+			backOff++
+			if backOff >= len(backoffSchedule) {
+				backOff = 0
+			}
+			continue
+		}
+		return true
+	}
+}
+
+func removeFromSeen(url string) {
+	seenURLMap.CompareAndDelete(url, nil)
+}
+func markAsSeen(url string) {
+	seenURLMap.CompareAndSwap(url, nil, true)
+}
 
 func newNetClient() *http.Client {
 	once.Do(func() {
-		var netTransport = &http.Transport{
-			Dial: (&net.Dialer{
-				Timeout: 60 * time.Second,
-			}).Dial,
-			TLSHandshakeTimeout: 60 * time.Second,
-		}
+
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.MaxIdleConns = 100
+		t.MaxConnsPerHost = 100
+		t.MaxIdleConnsPerHost = 100
+
 		netClient = &http.Client{
-			Timeout:   time.Second * 60,
-			Transport: netTransport,
+			Transport: t,
 		}
 	})
 
 	return netClient
 }
 
-func getURLData(url string) (*http.Response, []byte, error) {
-	// req, err := http.NewRequest("GET", url, nil)
-	// if err != nil {
-	// 	return nil, nil, err
-	// }
-
-	resp, err := http.Get(url) //().Do(req)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return resp, body, nil
-}
-
-func getURLDataWithRetries(url string) (*http.Response, []byte, error) {
-	var body []byte
+func getURLDataWithRetries(url string) (io.ReadCloser, error) {
 	var err error
 	var resp *http.Response
 
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
 	for _, backoff := range backoffSchedule {
-		resp, body, err = getURLData(url)
+		resp, err = newNetClient().Do(req)
 
-		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotFound) {
-			break
+		if err == nil {
+			status := resp.StatusCode
+			body := resp.Body
+			if status == http.StatusOK {
+				return body, nil
+			}
+			defer body.Close()
+			io.Copy(io.Discard, body)
+
+			err = fmt.Errorf("%q is unavailable. code is %d", url, resp.StatusCode)
+			if status == http.StatusNotFound {
+				return nil, err
+			}
+
 		}
 
-		// log.Printf("Request error: %+v\n", err)
-		// log.Printf("Retrying in %v\n", backoff)
 		time.Sleep(backoff)
 	}
 
 	// All retries failed
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return resp, body, nil
+	return nil, err
 }
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -162,25 +176,37 @@ func randSeq(n int) string {
 // It downloads the file from the url, creates a file with the name of the file, and writes the body of
 // the response to the file
 func (s *SimpleStorage) DownloadPhoto(url, dir, fn string) (string, error) {
-	resp, body, err := getURLDataWithRetries(url)
+	var err error
+	defer func() {
+		if err != nil {
+			removeFromSeen(url)
+		} else {
+			markAsSeen(url)
+		}
+	}()
+
+	if seenUrl(url) {
+		log.Println("files is seen", url)
+		return "", nil
+	}
+
+	body, err := getURLDataWithRetries(url)
 	if err != nil {
 		log.Println(err)
 		return "", err
 	}
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("%q is unavailable. code is %d", url, resp.StatusCode)
-		return "", err
-	}
+	defer body.Close()
+
 	if fn == "" {
 		fn = randSeq(10) + ".jpg"
 	}
 	urlName, _ := filename(url)
 	fn = fmt.Sprintf("%s_%s", urlName, fn)
-
 	filepath := s.FilePath(dir, fn)
-	// Create the file
+
 	out, err := os.Create(filepath)
 	if err != nil {
+		io.Copy(io.Discard, body)
 		log.Println(err)
 		return "", err
 	}
@@ -188,7 +214,7 @@ func (s *SimpleStorage) DownloadPhoto(url, dir, fn string) (string, error) {
 
 	// Write the body to file
 
-	_, err = out.Write(body)
+	_, err = io.Copy(out, body)
 	if err != nil {
 		return "", err
 	}
